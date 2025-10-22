@@ -1,4 +1,4 @@
-name: Auto Unzip Workflow
+name: Auto Unzip Files
 
 on:
   push:
@@ -11,50 +11,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
 
-      - name: Find and unzip files
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      - name: List files before unzip
         run: |
-          shopt -s nullglob
-          for zip_file in *.zip **/*.zip; do
-            if [ -f "$zip_file" ]; then
-              dir_path=$(dirname "$zip_file")
-              base_name=$(basename "$zip_file" .zip)
-              mkdir -p "$dir_path/$base_name"
-              if unzip -o "$zip_file" -d "$dir_path/$base_name"; then
-                echo "✅ Extracted: $zip_file to $dir_path/$base_name"
-              else
-                echo "❌ Failed to extract: $zip_file"
-                exit 1
-              fi
-            fi
+          echo "Current directory contents:"
+          ls -la
+          echo "Found ZIP files:"
+          find . -name "*.zip"
+
+      - name: Extract zip files
+        run: |
+          for zip_file in $(find . -name "*.zip"); do
+            echo "Processing: $zip_file"
+            unzip -o "$zip_file"
+            echo "Extraction completed for $zip_file"
           done
 
-      - name: Commit and push changes
+      - name: List files after unzip
         run: |
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "github-actions[bot]"
-          
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git add .
-            git commit -m "🔓 Auto-extract zip files [skip ci]"
-            git push
-          else
-            echo "No changes to commit"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "Directory contents after extraction:"
+          ls -la
 
-      - name: Error check
-        if: failure()
+      - name: Commit files
         run: |
-          echo "⚠️ Workflow failed!"
-          echo "Current time (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
-          echo "User: ${{ github.actor }}"
-          exit 1
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add -A
+          git diff --cached --quiet || git commit -m "📦 Extract zip contents"
+          git push
