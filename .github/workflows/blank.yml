@@ -3,36 +3,58 @@ name: Auto Unzip Workflow
 on:
   push:
     paths:
-      - '**.zip'  # Zip dosyası yüklendiğinde tetiklenecek
-  workflow_dispatch:  # Manuel tetikleme seçeneği
+      - '**.zip'
+  workflow_dispatch:
 
 jobs:
   unzip:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Find and unzip files
         run: |
-          # Zip dosyalarını bul
-          for zip_file in $(find . -name "*.zip"); do
-            # Zip dosyasının bulunduğu dizini al
-            dir_path=$(dirname "$zip_file")
-            # Zip dosyasının adını al (uzantısız)
-            base_name=$(basename "$zip_file" .zip)
-            # Hedef klasörü oluştur
-            mkdir -p "$dir_path/$base_name"
-            # Zip dosyasını aç
-            unzip -o "$zip_file" -d "$dir_path/$base_name"
-            echo "Extracted: $zip_file to $dir_path/$base_name"
+          shopt -s nullglob
+          for zip_file in *.zip **/*.zip; do
+            if [ -f "$zip_file" ]; then
+              dir_path=$(dirname "$zip_file")
+              base_name=$(basename "$zip_file" .zip)
+              mkdir -p "$dir_path/$base_name"
+              if unzip -o "$zip_file" -d "$dir_path/$base_name"; then
+                echo "✅ Extracted: $zip_file to $dir_path/$base_name"
+              else
+                echo "❌ Failed to extract: $zip_file"
+                exit 1
+              fi
+            fi
           done
 
-      - name: Commit extracted files
+      - name: Commit and push changes
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add .
-          git commit -m "Auto-extract zip files" || echo "No changes to commit"
-          git push
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add .
+            git commit -m "🔓 Auto-extract zip files [skip ci]"
+            git push
+          else
+            echo "No changes to commit"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Error check
+        if: failure()
+        run: |
+          echo "⚠️ Workflow failed!"
+          echo "Current time (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+          echo "User: ${{ github.actor }}"
+          exit 1
