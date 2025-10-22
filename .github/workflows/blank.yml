@@ -1,0 +1,38 @@
+name: Auto Unzip Workflow
+
+on:
+  push:
+    paths:
+      - '**.zip'  # Zip dosyası yüklendiğinde tetiklenecek
+  workflow_dispatch:  # Manuel tetikleme seçeneği
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Find and unzip files
+        run: |
+          # Zip dosyalarını bul
+          for zip_file in $(find . -name "*.zip"); do
+            # Zip dosyasının bulunduğu dizini al
+            dir_path=$(dirname "$zip_file")
+            # Zip dosyasının adını al (uzantısız)
+            base_name=$(basename "$zip_file" .zip)
+            # Hedef klasörü oluştur
+            mkdir -p "$dir_path/$base_name"
+            # Zip dosyasını aç
+            unzip -o "$zip_file" -d "$dir_path/$base_name"
+            echo "Extracted: $zip_file to $dir_path/$base_name"
+          done
+
+      - name: Commit extracted files
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .
+          git commit -m "Auto-extract zip files" || echo "No changes to commit"
+          git push
