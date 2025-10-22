@@ -1,0 +1,433 @@
+import React, { useRef, useEffect, useReducer, useCallback, useState } from 'react';
+import { Helmet } from 'react-helmet';
+import {
+  CANVAS_WIDTH,
+  CANVAS_HEIGHT,
+  BUILDING_COSTS,
+} from '../helpers/gameConstants';
+import { gameReducer, getInitialGameState } from '../helpers/gameState';
+import { drawPlayer } from '../helpers/renderPlayer';
+import { drawZombies } from '../helpers/renderZombies';
+import { drawBullets } from '../helpers/renderBullets';
+import { drawResourceNodes } from '../helpers/renderResources';
+import { drawBuildings } from '../helpers/renderBuildings';
+import { drawUI, drawBackground, drawGameOver, drawVictory } from '../helpers/renderUI';
+import { ensureImagesLoaded } from '../helpers/renderCommon';
+import { Button } from '../components/Button';
+import { Slider } from '../components/Slider';
+import styles from './_index.module.css';
+
+type Screen = 'menu' | 'modeSelection' | 'settings' | 'game';
+type ControlMode = 'computer' | 'mobile' | null;
+
+const IndexPage = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [gameState, dispatch] = useReducer(gameReducer, getInitialGameState());
+  const [currentScreen, setCurrentScreen] = useState<Screen>('menu');
+  const [controlMode, setControlMode] = useState<ControlMode>(null);
+  const [soundVolume, setSoundVolume] = useState([70]);
+  const [graphicsQuality, setGraphicsQuality] = useState('high');
+  
+  // Mobile controls state
+  const [joystickActive, setJoystickActive] = useState(false);
+  const [joystickPosition, setJoystickPosition] = useState({ x: 0, y: 0 });
+  const joystickCenterRef = useRef({ x: 0, y: 0 });
+  
+  const keysPressed = useRef<Record<string, boolean>>({});
+  const mousePosition = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
+
+  const gameLoop = useCallback(
+    (timestamp: number) => {
+      dispatch({ type: 'UPDATE', payload: { keysPressed: keysPressed.current, mousePosition: mousePosition.current } });
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const context = canvas.getContext('2d');
+      if (!context) return;
+
+      // Draw background
+      drawBackground(context);
+
+      // Draw game objects
+      drawResourceNodes(context, gameState.resourceNodes);
+      drawBuildings(context, gameState.buildings);
+      
+      // Detect if player is moving based on key presses
+      const isPlayerMoving = Object.keys(keysPressed.current).some(key => 
+        ['w', 's', 'a', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key) && 
+        keysPressed.current[key]
+      );
+      
+      drawPlayer(context, gameState.player, mousePosition.current, isPlayerMoving);
+      drawZombies(context, gameState.zombies, gameState.player.position);
+      drawBullets(context, gameState.bullets);
+
+      // Draw UI
+      drawUI(context, gameState);
+
+      // Draw Game Over or Victory
+      if (gameState.gameOver) {
+        drawGameOver(context);
+      } else if (gameState.victory) {
+        drawVictory(context);
+      }
+    },
+    [gameState],
+  );
+
+  // Start loading images immediately on component mount
+  useEffect(() => {
+    // Start loading images asynchronously while user is on menu
+    ensureImagesLoaded();
+  }, []);
+
+  useEffect(() => {
+    if (currentScreen !== 'game') return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      keysPressed.current[e.key.toLowerCase()] = true;
+
+      if (gameState.gameOver && e.key.toLowerCase() === 'r') {
+        dispatch({ type: 'RESTART_GAME' });
+        return;
+      }
+      
+      if (gameState.gameOver || gameState.victory) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 't') dispatch({ type: 'BUILD', payload: 'turret' });
+      if (key === 'w') dispatch({ type: 'BUILD', payload: 'wall' });
+      if (key === 'h') dispatch({ type: 'BUILD', payload: 'house' });
+      if (key === 'e') dispatch({ type: 'EAT_FRUIT' });
+      if (key === 'escape') setCurrentScreen('menu');
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      keysPressed.current[e.key.toLowerCase()] = false;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!canvasRef.current) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      mousePosition.current = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      };
+    };
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button === 0 && !gameState.gameOver && !gameState.victory) {
+        dispatch({ type: 'SHOOT', payload: mousePosition.current });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    if (controlMode === 'computer') {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mousedown', handleMouseDown);
+    }
+
+    const frameId = requestAnimationFrame(gameLoop);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mousedown', handleMouseDown);
+      cancelAnimationFrame(frameId);
+    };
+  }, [gameLoop, gameState.gameOver, gameState.victory, currentScreen, controlMode]);
+
+  // Mobile joystick handlers
+  const handleJoystickStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    joystickCenterRef.current = {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+    setJoystickActive(true);
+    handleJoystickMove(touch.clientX, touch.clientY);
+  };
+
+  const handleJoystickMove = (clientX: number, clientY: number) => {
+    const dx = clientX - joystickCenterRef.current.x;
+    const dy = clientY - joystickCenterRef.current.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const maxDistance = 40;
+    
+    const clampedDistance = Math.min(distance, maxDistance);
+    const angle = Math.atan2(dy, dx);
+    
+    const x = Math.cos(angle) * clampedDistance;
+    const y = Math.sin(angle) * clampedDistance;
+    
+    setJoystickPosition({ x, y });
+    
+    // Update keyboard state based on joystick
+    keysPressed.current = {};
+    if (clampedDistance > 10) {
+      if (Math.abs(x) > Math.abs(y)) {
+        keysPressed.current[x > 0 ? 'd' : 'a'] = true;
+      } else {
+        keysPressed.current[y > 0 ? 's' : 'w'] = true;
+      }
+    }
+  };
+
+  const handleJoystickTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!joystickActive) return;
+    const touch = e.touches[0];
+    handleJoystickMove(touch.clientX, touch.clientY);
+  };
+
+  const handleJoystickEnd = () => {
+    setJoystickActive(false);
+    setJoystickPosition({ x: 0, y: 0 });
+    keysPressed.current = {};
+  };
+
+  const handleMobileShoot = () => {
+    if (gameState.gameOver || gameState.victory) return;
+    // Shoot in the direction the player last moved or forward
+    const shootTarget = {
+      x: gameState.player.position.x + 100,
+      y: gameState.player.position.y,
+    };
+    dispatch({ type: 'SHOOT', payload: shootTarget });
+  };
+
+  const startGame = (mode: ControlMode) => {
+    setControlMode(mode);
+    setCurrentScreen('game');
+    dispatch({ type: 'RESTART_GAME' });
+  };
+
+  const renderMainMenu = () => (
+    <div className={styles.menuContainer}>
+      <h1 className={styles.menuTitle}>Zombi Dalga Savunma</h1>
+      <div className={styles.menuButtons}>
+        <Button 
+          size="lg" 
+          onClick={() => setCurrentScreen('modeSelection')}
+          className={styles.menuButton}
+        >
+          Oyuna Başla
+        </Button>
+        <Button 
+          size="lg" 
+          variant="secondary"
+          onClick={() => setCurrentScreen('settings')}
+          className={styles.menuButton}
+        >
+          Ayarlar
+        </Button>
+        <Button 
+          size="lg" 
+          variant="outline"
+          onClick={() => window.close()}
+          className={styles.menuButton}
+        >
+          Çıkış
+        </Button>
+      </div>
+    </div>
+  );
+
+  const renderModeSelection = () => (
+    <div className={styles.menuContainer}>
+      <h1 className={styles.menuTitle}>Kontrol Tipi Seç</h1>
+      <div className={styles.modeSelection}>
+        <button 
+          className={styles.modeCard}
+          onClick={() => startGame('computer')}
+        >
+          <div className={styles.modeIcon}>💻</div>
+          <h2 className={styles.modeTitle}>Bilgisayar</h2>
+          <p className={styles.modeDescription}>Klavye ve fare ile oyna</p>
+        </button>
+        <button 
+          className={styles.modeCard}
+          onClick={() => startGame('mobile')}
+        >
+          <div className={styles.modeIcon}>📱</div>
+          <h2 className={styles.modeTitle}>Mobil</h2>
+          <p className={styles.modeDescription}>Dokunmatik kontroller</p>
+        </button>
+      </div>
+      <Button 
+        variant="ghost" 
+        onClick={() => setCurrentScreen('menu')}
+        className={styles.backButton}
+      >
+        ← Geri
+      </Button>
+    </div>
+  );
+
+  const renderSettings = () => (
+    <div className={styles.menuContainer}>
+      <h1 className={styles.menuTitle}>Ayarlar</h1>
+      <div className={styles.settingsPanel}>
+        <div className={styles.settingItem}>
+          <label className={styles.settingLabel}>Ses Seviyesi</label>
+          <Slider 
+            value={soundVolume}
+            onValueChange={setSoundVolume}
+            max={100}
+            step={1}
+          />
+          <span className={styles.settingValue}>{soundVolume[0]}%</span>
+        </div>
+        <div className={styles.settingItem}>
+          <label className={styles.settingLabel}>Grafik Kalitesi</label>
+          <div className={styles.qualityButtons}>
+            <Button 
+              variant={graphicsQuality === 'low' ? 'primary' : 'outline'}
+              size="sm"
+              onClick={() => setGraphicsQuality('low')}
+            >
+              Düşük
+            </Button>
+            <Button 
+              variant={graphicsQuality === 'medium' ? 'primary' : 'outline'}
+              size="sm"
+              onClick={() => setGraphicsQuality('medium')}
+            >
+              Orta
+            </Button>
+            <Button 
+              variant={graphicsQuality === 'high' ? 'primary' : 'outline'}
+              size="sm"
+              onClick={() => setGraphicsQuality('high')}
+            >
+              Yüksek
+            </Button>
+          </div>
+        </div>
+      </div>
+      <Button 
+        variant="ghost" 
+        onClick={() => setCurrentScreen('menu')}
+        className={styles.backButton}
+      >
+        ← Geri
+      </Button>
+    </div>
+  );
+
+  const renderGame = () => (
+    <div className={styles.gameContainer}>
+      <div className={styles.gameHeader}>
+        <h1 className={styles.gameTitle}>Zombi Dalga Savunma</h1>
+        <Button 
+          variant="outline" 
+          size="sm"
+          onClick={() => setCurrentScreen('menu')}
+        >
+          Menü
+        </Button>
+      </div>
+      <div className={styles.gameWrapper}>
+          <canvas
+            ref={canvasRef}
+            width={CANVAS_WIDTH}
+            height={CANVAS_HEIGHT}
+            className={styles.gameCanvas}
+          />
+        {controlMode === 'computer' && (
+          <div className={styles.controls}>
+            <h2>Kontroller</h2>
+            <ul>
+              <li><strong>Hareket:</strong> WASD veya Ok Tuşları</li>
+              <li><strong>Nişan:</strong> Fare</li>
+              <li><strong>Ateş:</strong> Sol Tık</li>
+              <li><strong>Meyve Ye (İyileş):</strong> E</li>
+            </ul>
+            <h2>Yapılar</h2>
+            <ul>
+              <li><strong>Taret (T):</strong> {BUILDING_COSTS.turret.wood} Odun, {BUILDING_COSTS.turret.stone} Taş</li>
+              <li><strong>Ev (H):</strong> {BUILDING_COSTS.house.wood} Odun, {BUILDING_COSTS.house.stone} Taş</li>
+            </ul>
+            <p className={styles.controlNote}>Not: Duvarlar sadece dalga araları sırasında inşa edilebilir (W tuşu)</p>
+            {gameState.gameOver && <p className={styles.restartMessage}>Yeniden başlamak için 'R' tuşuna bas</p>}
+          </div>
+        )}
+      </div>
+      {controlMode === 'mobile' && (
+        <div className={styles.mobileControls}>
+          <div className={styles.leftControls}>
+            <div 
+              className={styles.joystickContainer}
+              onTouchStart={handleJoystickStart}
+              onTouchMove={handleJoystickTouchMove}
+              onTouchEnd={handleJoystickEnd}
+            >
+              <div className={styles.joystickBase}>
+                <div 
+                  className={styles.joystickStick}
+                  style={{
+                    transform: `translate(${joystickPosition.x}px, ${joystickPosition.y}px)`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+          <div className={styles.rightControls}>
+            <button 
+              className={styles.shootButton}
+              onTouchStart={handleMobileShoot}
+            >
+              🎯
+            </button>
+            <div className={styles.buildingButtons}>
+              <button 
+                className={styles.actionButton}
+                onTouchStart={() => dispatch({ type: 'BUILD', payload: 'turret' })}
+              >
+                T
+              </button>
+              <button 
+                className={styles.actionButton}
+                onTouchStart={() => dispatch({ type: 'BUILD', payload: 'house' })}
+              >
+                H
+              </button>
+              <button 
+                className={styles.actionButton}
+                onTouchStart={() => dispatch({ type: 'EAT_FRUIT' })}
+              >
+                E
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      <Helmet>
+        <title>Zombie Dalga Savunma</title>
+        <meta name="description" content="Survive the waves of zombies in this top-down shooter game." />
+        {/* Preload game sprite images for faster loading */}
+        <link rel="preload" as="image" href="https://assets.floot.app/1a0ac3ff-f895-4ed0-b57f-0cafae70d9ec/540fcfce-581e-4348-ae08-78aab9891dd8.png" />
+        <link rel="preload" as="image" href="https://assets.floot.app/1a0ac3ff-f895-4ed0-b57f-0cafae70d9ec/a92ff2ce-be3b-463a-a9b0-b8b4c2b2c87e.png" />
+        <link rel="preload" as="image" href="https://assets.floot.app/1a0ac3ff-f895-4ed0-b57f-0cafae70d9ec/6e4f5aea-bc83-486f-9d48-e1c1e6fd5e42.png" />
+        <link rel="preload" as="image" href="https://assets.floot.app/1a0ac3ff-f895-4ed0-b57f-0cafae70d9ec/55e63e8f-6c8b-4781-9c74-47d2d9b8f8b5.png" />
+        <link rel="preload" as="image" href="https://assets.floot.app/1a0ac3ff-f895-4ed0-b57f-0cafae70d9ec/9e103dc6-1666-4edf-9405-9fc2976e6806.png" />
+      </Helmet>
+      <main className={styles.container}>
+        {currentScreen === 'menu' && renderMainMenu()}
+        {currentScreen === 'modeSelection' && renderModeSelection()}
+        {currentScreen === 'settings' && renderSettings()}
+        {currentScreen === 'game' && renderGame()}
+      </main>
+    </>
+  );
+};
+
+export default IndexPage;
